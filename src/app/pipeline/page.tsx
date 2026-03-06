@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import {
   DndContext,
   DragEndEvent,
@@ -18,15 +18,17 @@ import { PipelineColumn } from '@/components/pipeline/PipelineColumn'
 import { PipelineCard } from '@/components/pipeline/PipelineCard'
 import { LeadModal } from '@/components/leads/LeadModal'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { Filter, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 
 export default function PipelinePage() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [activeLead, setActiveLead] = useState<Lead | null>(null)
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
   const [search, setSearch] = useState('')
+
+  // Guarda o stage original ANTES do drag comecar
+  const originalStageRef = useRef<PipelineStage | null>(null)
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
@@ -38,9 +40,8 @@ export default function PipelinePage() {
     try {
       const data = await fetchLeads()
       setLeads(data)
-      setError(null)
     } catch (e: any) {
-      setError(e.message)
+      console.error(e)
     } finally {
       setLoading(false)
     }
@@ -61,7 +62,10 @@ export default function PipelinePage() {
 
   function handleDragStart(event: DragStartEvent) {
     const lead = leads.find((l) => l.id === event.active.id)
-    if (lead) setActiveLead(lead)
+    if (lead) {
+      setActiveLead(lead)
+      originalStageRef.current = lead.pipeline_stage
+    }
   }
 
   function handleDragOver(event: DragOverEvent) {
@@ -80,26 +84,39 @@ export default function PipelinePage() {
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     setActiveLead(null)
-    if (!over) return
+
     const leadId = active.id as string
+    const originalStage = originalStageRef.current
+    originalStageRef.current = null
+
+    if (!over || !originalStage) {
+      if (originalStage) {
+        setLeads((prev) =>
+          prev.map((l) => l.id === leadId ? { ...l, pipeline_stage: originalStage } : l)
+        )
+      }
+      return
+    }
+
     const overId = over.id as string
     const newStage = PIPELINE_STAGES.find((s) => s === overId)
       || leads.find((l) => l.id === overId)?.pipeline_stage
-    if (newStage) {
-      const original = leads.find((l) => l.id === leadId)
-      if (original?.pipeline_stage !== newStage) {
-        setLeads((prev) =>
-          prev.map((l) => l.id === leadId ? { ...l, pipeline_stage: newStage } : l)
-        )
-        try {
-          await updateLeadStage(leadId, newStage)
-        } catch (e) {
-          // Revert on error
-          setLeads((prev) =>
-            prev.map((l) => l.id === leadId ? { ...l, pipeline_stage: original!.pipeline_stage } : l)
-          )
-        }
-      }
+
+    if (!newStage || newStage === originalStage) {
+      setLeads((prev) =>
+        prev.map((l) => l.id === leadId ? { ...l, pipeline_stage: originalStage } : l)
+      )
+      return
+    }
+
+    // Salva no Supabase
+    try {
+      await updateLeadStage(leadId, newStage)
+    } catch (e) {
+      console.error('Erro ao salvar:', e)
+      setLeads((prev) =>
+        prev.map((l) => l.id === leadId ? { ...l, pipeline_stage: originalStage } : l)
+      )
     }
   }
 
